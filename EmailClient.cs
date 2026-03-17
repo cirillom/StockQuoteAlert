@@ -19,11 +19,11 @@ public class EmailSettings
     public string RecipientName { get; set; } = string.Empty;
 }
 
-public class EmailClient : IDisposable
+public class EmailClient
 {
     private readonly EmailSettings _settings;
     private readonly SecureSocketOptions _socketOptions;
-    private ILogger logger;
+    private readonly ILogger logger;
 
     public EmailClient(IConfiguration config, ILogger logger)
     {
@@ -58,12 +58,12 @@ public class EmailClient : IDisposable
                     _settings.RecipientEmail);
                 return true;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not ArgumentException and not OperationCanceledException)
             {
                 this.logger.LogWarning(ex, "Attempt {Attempt} of {MaxRetries} to send email failed.",
                     attempt, maxRetries);
 
-                if (attempt == maxRetries || ct.IsCancellationRequested)
+                if (attempt == maxRetries)
                 {
                     this.logger.LogError(ex,
                         "Failed to send email to {RecipientEmail} after {MaxRetries} attempts.",
@@ -71,7 +71,7 @@ public class EmailClient : IDisposable
                     return false;
                 }
 
-                await Task.Delay(2000);
+                await Task.Delay(2000, ct);
             }
         }
 
@@ -107,7 +107,5 @@ public class EmailClient : IDisposable
             "starttlswhenavailable" => SecureSocketOptions.StartTlsWhenAvailable,
             _ => throw new InvalidOperationException(
                 $"Unknown SecureSocket value '{value}'. Valid values: None, Auto, SslOnConnect, StartTls, StartTlsWhenAvailable.")
-        };
-
-    public void Dispose() { } // nothing to dispose — SmtpClient is created per-send
+        }
 }

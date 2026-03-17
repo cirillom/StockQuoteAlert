@@ -18,11 +18,12 @@ namespace StockQuoteAlert
         private int buyPriceCents;
         private int currentPriceCents;
         private static readonly HttpClient client = new HttpClient();
-        private ILogger logger;
+        private readonly ILogger logger;
 
         static Stock()
         {
             client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+            client.Timeout = TimeSpan.FromSeconds(10);
         }
 
         private Stock(string name, int sellPriceCents, int buyPriceCents, ILogger logger)
@@ -48,6 +49,7 @@ namespace StockQuoteAlert
             }
 
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            logger.LogDebug("API key loaded.");
 
             var stock = new Stock(name, sellPriceCents, buyPriceCents, logger);
             await stock.UpdateCurrentPriceAsync(ct);
@@ -78,7 +80,12 @@ namespace StockQuoteAlert
                         .GetProperty("regularMarketPrice")
                         .GetDecimal();
                 }
-                catch (Exception ex) when (ex is not ArgumentException)
+                catch (JsonException ex)
+                {
+                    logger.LogError(ex, "Unexpected JSON from API for '{Ticker}'.", ticker);
+                    throw;
+                }
+                catch (Exception ex) when (ex is not ArgumentException and not OperationCanceledException)
                 {
                     this.logger.LogWarning(ex, "Attempt {Attempt} of {MaxRetries} to fetch quote for '{Ticker}' failed.", attempt, maxRetries, ticker);
                     if (attempt == maxRetries)

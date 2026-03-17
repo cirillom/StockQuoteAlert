@@ -3,11 +3,13 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using StockQuoteAlert;
 using System.Globalization;
+using System.Text.RegularExpressions;
 
 class Program
 {
-    private static ILogger logger;
     const int PollIntervalMs = 20 * 1000;
+
+    private record StockArgs(string StockName, int SellPriceCents, int BuyPriceCents);
 
     static async Task<int> Main(string[] args)
     {
@@ -21,68 +23,18 @@ class Program
             builder.SetMinimumLevel(LogLevel.Debug);
         });
 
-        logger = loggerFactory.CreateLogger<Program>();
-        logger.LogInformation("Launching Stock Quote Alert");
+        ILogger logger = loggerFactory.CreateLogger<Program>();
+        logger.LogInformation("Launching Stock Quote Alert.");
 
-        string configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
-        IConfiguration config;
-        try
-        {
-            config = new ConfigurationBuilder()
-                .SetBasePath(AppContext.BaseDirectory)
-                .AddJsonFile(configPath, optional: false, reloadOnChange: false)
-                .Build();
-        }
-        catch (Exception ex)
-        {
-            logger.LogCritical(ex, "Failed to load appsettings.json. Exiting...");
-            return -1;
-        }
+        if (!TryLoadConfig(out IConfiguration? config, logger)) return -1;
 
-        EmailClient client;
-        try
-        {
-            client = new EmailClient(config, logger);
-        }
-        catch (Exception ex)
-        {
-            logger.LogCritical(ex, "Failed to initialize EmailClient. Exiting...");
-            return -1;
-        }
+        if (!TryInitEmailClient(config!, out EmailClient? client, logger)) return -1;
 
-        if (args.Length != 3)
-        {
-            logger.LogError("Please provide the stock name, sell price, and buy price as command-line arguments.");
-            logger.LogWarning("Usage: .\\StockQuoteAlert <StockName> <SellPrice> <BuyPrice>");
-            return -1;
-        }
-
-        string stockName = args[0];
-        if (!System.Text.RegularExpressions.Regex.IsMatch(stockName, @"^[A-Z0-9]{1,10}$"))
-        {
-            logger.LogError("Invalid stock name '{StockName}'. Must be alphanumeric, e.g. PETR4.", stockName);
-            return -1;
-        }
-
-        if (!TryParsePriceToCents(args[1], "SellPrice", out int sellPriceCents, logger))
-            return -1;
-        if (!TryParsePriceToCents(args[2], "BuyPrice", out int buyPriceCents, logger))
-            return -1;
-
-        if (buyPriceCents >= sellPriceCents)
-        {
-            logger.LogError(
-                "BuyPrice (R${BuyPrice}) must be strictly less than SellPrice (R${SellPrice}).",
-                buyPriceCents / 100m, sellPriceCents / 100m);
-            return -1;
-        }
-
-        logger.LogDebug(
-            "Parsed arguments: StockName={StockName}, SellPrice={SellPrice}, BuyPrice={BuyPrice}",
-            stockName, sellPriceCents / 100m, buyPriceCents / 100m);
+        StockArgs? stockArgs = ParseArgs(args, logger);
+        if (stockArgs is null) return -1;
 
         using var cts = new CancellationTokenSource();
-        Console.CancelKeyPress += (sender, e) =>
+        Console.CancelKeyPress += (_, e) =>
         {
             logger.LogInformation("Stopping monitor...");
             e.Cancel = true;
@@ -92,67 +44,88 @@ class Program
         Stock stock;
         try
         {
-            stock = await Stock.CreateAsync(stockName, sellPriceCents, buyPriceCents, logger, config, cts.Token);
+            stock = await Stock.CreateAsync(
+                stockArgs.StockName, stockArgs.SellPriceCents, stockArgs.BuyPriceCents,
+                logger, config!, cts.Token);
         }
         catch (Exception ex)
         {
-            logger.LogCritical(ex, "Failed to initialize stock tracker for {StockName}. Exiting...", stockName);
+            logger.LogCritical(ex, "Failed to initialize stock tracker for {StockName}. Exiting...", stockArgs.StockName);
             return -1;
         }
 
-        logger.LogInformation("Starting stock price monitor. Press Ctrl+C to stop.");
-        while (!cts.Token.IsCancellationRequested)
+        await RunMonitorLoopAsync(stock, client!, logger, cts.Token);
+        return 0;
+    }
+
+
+
+
+    private static bool TryLoadConfig(out IConfiguration? config, ILogger logger)
+    {
+        config = null;
+        try
         {
-            RecommendationState recommendation;
-            try
-            {
-                recommendation = await stock.GetRecommendationAsync(cts.Token);
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Error occurred while fetching recommendation for {StockName}.", stock.Name);
-                try { await Task.Delay(PollIntervalMs, cts.Token); } catch (TaskCanceledException) { break; }
-                continue;
-            }
+            config = new ConfigurationBuilder()
+                .SetBasePath(AppContext.BaseDirectory)
+                .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false)
+                .Build();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogCritical(ex, "Failed to load appsettings.json. Exiting...");
+            return false;
+        }
+    }
 
-            bool sent = false;
-            switch (recommendation)
-            {
-                case RecommendationState.Buy:
-                    sent = await client.SendEmailAsync(
-                        subject: $"Buy Alert: {stock.Name}",
-                        body: $"<h1>Buy Alert</h1><p>It is recommended to <strong>BUY</strong> {stock.Name}.</p><p>Current Price: R${stock.CurrentPrice:F2}<br>Buy Target: R${stock.BuyPrice:F2}</p>",
-                        isHtml: true,
-                        cts.Token
-                    );
-                    if (sent)
-                        logger.LogInformation("Buy alert sent for {StockName}.", stock.Name);
-                    else
-                        logger.LogWarning("Buy alert FAILED for {StockName}.", stock.Name);
-                    break;
-                    
-                case RecommendationState.Sell:
-                    sent = await client.SendEmailAsync(
-                        subject: $"Sell Alert: {stock.Name}",
-                        body: $"<h1>Sell Alert</h1><p>It is recommended to <strong>SELL</strong> {stock.Name}.</p><p>Current Price: R${stock.CurrentPrice:F2}<br>Sell Target: R${stock.SellPrice:F2}</p>",
-                        isHtml: true,
-                        cts.Token
-                    );
-                    if (sent)
-                        logger.LogInformation("Sell alert sent for {StockName}.", stock.Name);
-                    else
-                        logger.LogWarning("Sell alert FAILED for {StockName}.", stock.Name);
-                    break;
-                default:
-                    logger.LogDebug("No action for {StockName}. Current price R${Price:F2} is within bounds.", stock.Name, stock.CurrentPrice);
-                    break;
-            }
+    private static bool TryInitEmailClient(IConfiguration config, out EmailClient? client, ILogger logger)
+    {
+        client = null;
+        try
+        {
+            client = new EmailClient(config, logger);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogCritical(ex, "Failed to initialize EmailClient. Exiting...");
+            return false;
+        }
+    }
 
-
-            try { await Task.Delay(PollIntervalMs, cts.Token); } catch (TaskCanceledException) { break; }
+    private static StockArgs? ParseArgs(string[] args, ILogger logger)
+    {
+        if (args.Length != 3)
+        {
+            logger.LogError("Please provide the stock name, sell price, and buy price as command-line arguments.");
+            logger.LogInformation("Usage: .\\StockQuoteAlert <StockName> <SellPrice> <BuyPrice>");
+            return null;
         }
 
-        return 0;
+        string stockName = args[0].ToUpper();
+        if (!Regex.IsMatch(stockName, @"^[A-Z0-9]{1,10}$"))
+        {
+            logger.LogError("Invalid stock name '{StockName}'. Must be alphanumeric, e.g. PETR4.", stockName);
+            return null;
+        }
+
+        if (!TryParsePriceToCents(args[1], "SellPrice", out int sellPriceCents, logger)) return null;
+        if (!TryParsePriceToCents(args[2], "BuyPrice", out int buyPriceCents, logger)) return null;
+
+        if (buyPriceCents >= sellPriceCents)
+        {
+            logger.LogError(
+                "BuyPrice (R${BuyPrice:F2}) must be strictly less than SellPrice (R${SellPrice:F2}).",
+                buyPriceCents / 100m, sellPriceCents / 100m);
+            return null;
+        }
+
+        logger.LogDebug(
+            "Parsed arguments: StockName={StockName}, SellPrice={SellPrice}, BuyPrice={BuyPrice}.",
+            stockName, sellPriceCents / 100m, buyPriceCents / 100m);
+
+        return new StockArgs(stockName, sellPriceCents, buyPriceCents);
     }
 
     private static bool TryParsePriceToCents(string input, string paramName, out int cents, ILogger logger)
@@ -171,10 +144,70 @@ class Program
             return false;
         }
 
-        // decimal.Round avoids any edge case like 22.679999... before truncation
         cents = (int)decimal.Round(price * 100, 0, MidpointRounding.AwayFromZero);
         return true;
     }
 
-}
+    private static async Task RunMonitorLoopAsync(Stock stock, EmailClient client,
+        ILogger logger, CancellationToken ct)
+    {
+        logger.LogInformation("Starting stock price monitor. Press Ctrl+C to stop.");
 
+        while (!ct.IsCancellationRequested)
+        {
+            RecommendationState recommendation;
+            try
+            {
+                recommendation = await stock.GetRecommendationAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Error occurred while fetching recommendation for {StockName}.", stock.Name);
+                try { await Task.Delay(PollIntervalMs, ct); } catch (TaskCanceledException) { break; }
+                continue;
+            }
+
+            if (recommendation != RecommendationState.Nothing)
+                try
+                {
+                    await SendAlertAsync(client, stock, recommendation, logger, ct);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Unexpected error while sending alert for {StockName}.", stock.Name);
+                }
+            else
+                logger.LogDebug(
+                    "No action for {StockName}. Current price R${Price:F2} is within bounds.",
+                    stock.Name, stock.CurrentPrice);
+
+            try { await Task.Delay(PollIntervalMs, ct); } catch (TaskCanceledException) { break; }
+        }
+
+        logger.LogInformation("Monitor stopped.");
+    }
+
+    private static async Task SendAlertAsync(EmailClient client, Stock stock,
+        RecommendationState recommendation, ILogger logger, CancellationToken ct)
+    {
+        bool isBuy = recommendation == RecommendationState.Buy;
+        string action = isBuy ? "BUY" : "SELL";
+        string target = isBuy
+            ? $"Buy Target: R${stock.BuyPrice:F2}"
+            : $"Sell Target: R${stock.SellPrice:F2}";
+
+        bool sent = await client.SendEmailAsync(
+            subject: $"{action} Alert: {stock.Name}",
+            body: $"<h1>{action} Alert</h1>"
+                + $"<p>It is recommended to <strong>{action}</strong> {stock.Name}.</p>"
+                + $"<p>Current Price: R${stock.CurrentPrice:F2}<br>{target}</p>",
+            isHtml: true,
+            ct
+        );
+
+        if (sent)
+            logger.LogInformation("{Action} alert sent for {StockName}.", action, stock.Name);
+        else
+            logger.LogWarning("{Action} alert FAILED for {StockName}.", action, stock.Name);
+    }
+}
