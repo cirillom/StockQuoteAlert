@@ -7,7 +7,7 @@ using System.Text.RegularExpressions;
 
 class Program
 {
-    const int PollIntervalMs = 20 * 1000;
+    static int PollingDelayMs = 20 * 1000;
 
     private record StockArgs(string StockName, int SellPriceCents, int BuyPriceCents);
 
@@ -52,12 +52,19 @@ class Program
                 stockArgs.StockName, stockArgs.SellPriceCents, stockArgs.BuyPriceCents,
                 logger, config!, cts.Token);
         }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            // Ctrl+C during startup — not an error, already logged by the CancelKeyPress handler
+            return 0;
+        }
         catch (Exception ex)
         {
             logger.LogCritical(ex, "Failed to initialize stock tracker for {StockName}. Exiting...", stockArgs.StockName);
             return -1;
         }
 
+        //config is guaranteed non-null here — TryLoadConfig returns false and exits before reaching this point if it is null.
+        PollingDelayMs = config!.GetValue<int>("PollingDelaySeconds", 20) * 1000;
         await RunMonitorLoopAsync(stock, client!, logger, cts.Token);
         return 0;
     }
@@ -170,7 +177,7 @@ class Program
                 // Task.Delay throws TaskCanceledException when the token is cancelled.
                 // Catching it here instead of checking ct.IsCancellationRequested avoids
                 // waiting the full PollIntervalMs before the loop exits on Ctrl+C.
-                try { await Task.Delay(PollIntervalMs, ct); } catch (TaskCanceledException) { break; }
+                try { await Task.Delay(PollingDelayMs, ct); } catch (TaskCanceledException) { break; }
                 continue;
             }
 
@@ -179,6 +186,10 @@ class Program
                 try
                 {
                     await SendAlertAsync(client, stock, recommendation, logger, ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break; // Ctrl+C during send — exit cleanly, same as the rest of the loop
                 }
                 catch (Exception ex)
                 {
@@ -195,7 +206,7 @@ class Program
             // Task.Delay throws TaskCanceledException when the token is cancelled.
             // Catching it here instead of checking ct.IsCancellationRequested avoids
             // waiting the full PollIntervalMs before the loop exits on Ctrl+C.
-            try { await Task.Delay(PollIntervalMs, ct); } catch (TaskCanceledException) { break; }
+            try { await Task.Delay(PollingDelayMs, ct); } catch (TaskCanceledException) { break; }
         }
 
         logger.LogInformation("Monitor stopped.");

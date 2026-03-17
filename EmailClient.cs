@@ -58,7 +58,7 @@ public class EmailClient
                     _settings.RecipientEmail);
                 return true;
             }
-            catch (Exception ex) when (ex is not ArgumentException and not OperationCanceledException)
+            catch (Exception ex) when (ex is not ArgumentException && !(ex is OperationCanceledException && ct.IsCancellationRequested))
             {
                 // OperationCanceledException must propagate so the monitor loop shuts down cleanly on Ctrl+C.
                 // ArgumentException from BuildMessage indicates a config problem — retrying won't help.

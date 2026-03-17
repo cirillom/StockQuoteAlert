@@ -1,5 +1,6 @@
 ﻿using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 
@@ -20,14 +21,18 @@ namespace StockQuoteAlert
         private int currentPriceCents;
 
         // A single static HttpClient is reused across all requests to avoid socket exhaustion from repeated instantiation.
-        private static readonly HttpClient client = new HttpClient();
+        // HttpVersion 1.1 is specified to maximize compatibility with APIs that may not support HTTP/2, which can cause unexpected failures.
+        private static readonly HttpClient client = new HttpClient()
+        {
+            DefaultRequestVersion = HttpVersion.Version11
+        };
         private readonly ILogger logger;
 
         static Stock()
         {
             // Some APIs reject requests that lack a User-Agent header. And I noticed a significant delay decrease after adding it.
             client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
-            client.Timeout = TimeSpan.FromSeconds(10);
+            client.Timeout = TimeSpan.FromSeconds(30);
         }
 
         private Stock(string name, int sellPriceCents, int buyPriceCents, ILogger logger)
@@ -53,6 +58,7 @@ namespace StockQuoteAlert
             }
 
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            client.Timeout = TimeSpan.FromSeconds(config.GetValue<int>("BrapiTimeoutSeconds", 30));
             logger.LogDebug("API key loaded.");
 
             var stock = new Stock(name, sellPriceCents, buyPriceCents, logger);
@@ -90,7 +96,7 @@ namespace StockQuoteAlert
                     logger.LogError(ex, "Unexpected JSON from API for '{Ticker}'.", ticker);
                     throw;
                 }
-                catch (Exception ex) when (ex is not ArgumentException and not OperationCanceledException)
+                catch (Exception ex) when (ex is not ArgumentException && !(ex is OperationCanceledException && ct.IsCancellationRequested))
                 {
                     // ArgumentException means the ticker is invalid — retrying won't fix it.
                     // OperationCanceledException must propagate immediately so the app shuts down cleanly.
