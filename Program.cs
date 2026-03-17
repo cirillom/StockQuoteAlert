@@ -36,6 +36,8 @@ class Program
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) =>
         {
+            // e.Cancel = true prevents the runtime from terminating the process immediately,
+            // allowing the cancellation token to trigger a clean shutdown instead.
             logger.LogInformation("Stopping monitor...");
             e.Cancel = true;
             cts.Cancel();
@@ -44,6 +46,8 @@ class Program
         Stock stock;
         try
         {
+            // config and client are guaranteed non-null here — TryLoad/TryInit return false
+            // and exit before reaching this point if either is null.
             stock = await Stock.CreateAsync(
                 stockArgs.StockName, stockArgs.SellPriceCents, stockArgs.BuyPriceCents,
                 logger, config!, cts.Token);
@@ -163,11 +167,15 @@ class Program
             catch (Exception ex)
             {
                 logger.LogError(ex, "Error occurred while fetching recommendation for {StockName}.", stock.Name);
+                // Task.Delay throws TaskCanceledException when the token is cancelled.
+                // Catching it here instead of checking ct.IsCancellationRequested avoids
+                // waiting the full PollIntervalMs before the loop exits on Ctrl+C.
                 try { await Task.Delay(PollIntervalMs, ct); } catch (TaskCanceledException) { break; }
                 continue;
             }
 
             if (recommendation != RecommendationState.Nothing)
+            {
                 try
                 {
                     await SendAlertAsync(client, stock, recommendation, logger, ct);
@@ -176,11 +184,17 @@ class Program
                 {
                     logger.LogError(ex, "Unexpected error while sending alert for {StockName}.", stock.Name);
                 }
+            }
             else
+            {
                 logger.LogDebug(
                     "No action for {StockName}. Current price R${Price:F2} is within bounds.",
                     stock.Name, stock.CurrentPrice);
+            }
 
+            // Task.Delay throws TaskCanceledException when the token is cancelled.
+            // Catching it here instead of checking ct.IsCancellationRequested avoids
+            // waiting the full PollIntervalMs before the loop exits on Ctrl+C.
             try { await Task.Delay(PollIntervalMs, ct); } catch (TaskCanceledException) { break; }
         }
 

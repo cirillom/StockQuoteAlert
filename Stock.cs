@@ -14,14 +14,18 @@ namespace StockQuoteAlert
         public decimal BuyPrice => buyPriceCents / 100m;
         public decimal CurrentPrice => currentPriceCents / 100m;
 
+        // Prices stored as integer cents to avoid floating-point rounding errors in comparisons.
         private int sellPriceCents;
         private int buyPriceCents;
         private int currentPriceCents;
+
+        // A single static HttpClient is reused across all requests to avoid socket exhaustion from repeated instantiation.
         private static readonly HttpClient client = new HttpClient();
         private readonly ILogger logger;
 
         static Stock()
         {
+            // Some APIs reject requests that lack a User-Agent header. And I noticed a significant delay decrease after adding it.
             client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
             client.Timeout = TimeSpan.FromSeconds(10);
         }
@@ -79,14 +83,17 @@ namespace StockQuoteAlert
                         .GetProperty("results")[0]
                         .GetProperty("regularMarketPrice")
                         .GetDecimal();
-                }
-                catch (JsonException ex)
+                } 
+                catch (JsonException ex) 
                 {
+                    // JSON parse failures are not transient — retrying will produce the same result.
                     logger.LogError(ex, "Unexpected JSON from API for '{Ticker}'.", ticker);
                     throw;
                 }
                 catch (Exception ex) when (ex is not ArgumentException and not OperationCanceledException)
                 {
+                    // ArgumentException means the ticker is invalid — retrying won't fix it.
+                    // OperationCanceledException must propagate immediately so the app shuts down cleanly.
                     this.logger.LogWarning(ex, "Attempt {Attempt} of {MaxRetries} to fetch quote for '{Ticker}' failed.", attempt, maxRetries, ticker);
                     if (attempt == maxRetries)
                     {
@@ -97,6 +104,7 @@ namespace StockQuoteAlert
                 }
             }
 
+            // The loop guarantees this is never reached; the throw satisfies the compiler.
             throw new InvalidOperationException("Unreachable.");
         }
 
@@ -104,6 +112,7 @@ namespace StockQuoteAlert
         {
             this.logger.LogDebug("Updating price for {StockName}.", Name);
             decimal price = await FetchQuotePriceAsync(Name, ct);
+            // AwayFromZero matches conventional financial rounding (e.g. R$1.005 → 101¢, not 100¢).
             currentPriceCents = (int)decimal.Round(price * 100, 0, MidpointRounding.AwayFromZero);
             this.logger.LogInformation("Updated price for {StockName}: R${CurrentPrice:F2}.", Name, CurrentPrice);
         }

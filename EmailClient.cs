@@ -60,6 +60,8 @@ public class EmailClient
             }
             catch (Exception ex) when (ex is not ArgumentException and not OperationCanceledException)
             {
+                // OperationCanceledException must propagate so the monitor loop shuts down cleanly on Ctrl+C.
+                // ArgumentException from BuildMessage indicates a config problem — retrying won't help.
                 this.logger.LogWarning(ex, "Attempt {Attempt} of {MaxRetries} to send email failed.",
                     attempt, maxRetries);
 
@@ -107,5 +109,5 @@ public class EmailClient
             "starttlswhenavailable" => SecureSocketOptions.StartTlsWhenAvailable,
             _ => throw new InvalidOperationException(
                 $"Unknown SecureSocket value '{value}'. Valid values: None, Auto, SslOnConnect, StartTls, StartTlsWhenAvailable.")
-        }
+        };
 }
