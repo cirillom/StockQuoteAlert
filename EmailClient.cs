@@ -25,11 +25,12 @@ public class EmailClient : IDisposable
     private readonly SecureSocketOptions _socketOptions;
     private ILogger logger;
 
-    public EmailClient(string configPath, ILogger logger)
+    public EmailClient(IConfiguration config, ILogger logger)
     {
         this.logger = logger;
-        this.logger.LogDebug("Initializing EmailClient with config path: {ConfigPath}", configPath);
-        _settings = LoadSettings(configPath);
+        this.logger.LogDebug("Initializing EmailClient.");
+        _settings = config.GetSection("EmailSettings").Get<EmailSettings>()
+            ?? throw new InvalidOperationException("Section 'EmailSettings' missing or empty in config file.");
         _socketOptions = ParseSocketOptions(_settings.SecureSocket);
     }
 
@@ -94,22 +95,6 @@ public class EmailClient : IDisposable
                 _settings.RecipientEmail);
             throw;
         }
-    }
-
-    private static EmailSettings LoadSettings(string configPath)
-    {
-        if (!File.Exists(configPath))
-            throw new FileNotFoundException(
-                $"Configuration file not found: {Path.GetFullPath(configPath)}");
-
-        IConfiguration config = new ConfigurationBuilder()
-            .SetBasePath(Directory.GetCurrentDirectory())
-            .AddJsonFile(configPath, optional: false, reloadOnChange: false)
-            .Build();
-
-        return config.GetSection("EmailSettings").Get<EmailSettings>()
-               ?? throw new InvalidOperationException(
-                      "Section 'EmailSettings' missing or empty in config file.");
     }
 
     private static SecureSocketOptions ParseSocketOptions(string value) =>

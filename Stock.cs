@@ -9,6 +9,11 @@ namespace StockQuoteAlert
 
     internal class Stock
     {
+        public string Name { get; private set; }
+        public decimal SellPrice => sellPriceCents / 100m;
+        public decimal BuyPrice => buyPriceCents / 100m;
+        public decimal CurrentPrice => currentPriceCents / 100m;
+
         private int sellPriceCents;
         private int buyPriceCents;
         private int currentPriceCents;
@@ -17,13 +22,7 @@ namespace StockQuoteAlert
 
         static Stock()
         {
-            var config = new ConfigurationBuilder().AddUserSecrets<Program>().Build();
-            string? apiKey = config["BrapiKey"];
-            if (string.IsNullOrEmpty(apiKey))
-                throw new InvalidOperationException("API key is missing from Secret Manager.");
-
             client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         }
 
         private Stock(string name, int sellPriceCents, int buyPriceCents, ILogger logger)
@@ -34,18 +33,21 @@ namespace StockQuoteAlert
             this.logger = logger;
         }
 
-        public string Name { get; private set; }
-        public decimal SellPrice => sellPriceCents / 100m;
-        public decimal BuyPrice => buyPriceCents / 100m;
-        public decimal CurrentPrice => currentPriceCents / 100m;
-
-        // CreateAsync receives the logger and passes it down to the constructor
-        public static async Task<Stock> CreateAsync(string name, int sellPriceCents, int buyPriceCents, ILogger logger, CancellationToken ct = default)
+        public static async Task<Stock> CreateAsync(string name, int sellPriceCents, int buyPriceCents, ILogger logger, IConfiguration config, CancellationToken ct = default)
         {
             logger.LogDebug("Creating tracker for {StockName}.", name);
 
             if (string.IsNullOrWhiteSpace(name))
                 throw new ArgumentException("Stock name cannot be null or empty.");
+
+            string? apiKey = config["BrapiKey"];
+            if (string.IsNullOrEmpty(apiKey))
+            {
+                logger.LogCritical("BrapiKey is missing from appsettings.json.");
+                throw new InvalidOperationException("BrapiKey is missing from appsettings.json.");
+            }
+
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
             var stock = new Stock(name, sellPriceCents, buyPriceCents, logger);
             await stock.UpdateCurrentPriceAsync(ct);

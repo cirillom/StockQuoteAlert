@@ -1,6 +1,7 @@
 ﻿using EmailClientApp;
-using StockQuoteAlert;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using StockQuoteAlert;
 using System.Globalization;
 
 class Program
@@ -23,11 +24,25 @@ class Program
         logger = loggerFactory.CreateLogger<Program>();
         logger.LogInformation("Launching Stock Quote Alert");
 
+        string configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+        IConfiguration config;
+        try
+        {
+            config = new ConfigurationBuilder()
+                .SetBasePath(AppContext.BaseDirectory)
+                .AddJsonFile(configPath, optional: false, reloadOnChange: false)
+                .Build();
+        }
+        catch (Exception ex)
+        {
+            logger.LogCritical(ex, "Failed to load appsettings.json. Exiting...");
+            return -1;
+        }
+
         EmailClient client;
         try
         {
-            string configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
-            client = new EmailClient(configPath, logger);
+            client = new EmailClient(config, logger);
         }
         catch (Exception ex)
         {
@@ -35,7 +50,6 @@ class Program
             return -1;
         }
 
-        //TODO: encapsulate this in a method and add error handling
         if (args.Length != 3)
         {
             logger.LogError("Please provide the stock name, sell price, and buy price as command-line arguments.");
@@ -78,7 +92,7 @@ class Program
         Stock stock;
         try
         {
-            stock = await Stock.CreateAsync(stockName, sellPriceCents, buyPriceCents, logger, cts.Token);
+            stock = await Stock.CreateAsync(stockName, sellPriceCents, buyPriceCents, logger, config, cts.Token);
         }
         catch (Exception ex)
         {
