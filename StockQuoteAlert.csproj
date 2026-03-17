@@ -14,10 +14,17 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.5" />
   </ItemGroup>
 	
-  <ItemGroup>
-	  <Content Include="appsettings.json">
-		  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-	  </Content>
+  <ItemGroup Condition="'$(Configuration)' == 'Debug'">
+      <Content Include="appsettings.json">
+          <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </Content>
   </ItemGroup>
+
+ <ItemGroup Condition="'$(Configuration)' == 'Release'">
+    <Content Include="appsettings.example.json">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        <TargetPath>appsettings.json</TargetPath>
+    </Content>
+</ItemGroup>
 	
 </Project>
