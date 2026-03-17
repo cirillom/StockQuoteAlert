@@ -1,4 +1,5 @@
 ﻿using StockQuoteAlert;
+using EmailClientApp;
 using Microsoft.Extensions.Logging;
 
 class Program
@@ -27,6 +28,9 @@ class Program
         }
 
         GlobalLogger.LogInformation("Launching Stock Quote Alert");
+
+        EmailClient client = new EmailClient("D:\\Projects\\StockQuoteAlert\\appsettings.json");
+
         string stockName = args[0];
         int sellPriceCents = (int)(decimal.Parse(args[1]) * 100);
         int buyPriceCents = (int)(decimal.Parse(args[2]) * 100);
@@ -52,11 +56,19 @@ class Program
             switch (recommendation)
             {
                 case RecommendationState.Buy:
-                    //send email to user saying to Buy the stock
+                    await client.SendEmailAsync(
+                        subject: $"Buy Alert: {stock.Name}",
+                        body: $"<h1>Buy Alert</h1><p>It is recommended to <strong>BUY</strong> {stock.Name}.</p><p>Current Price: R${stock.CurrentPrice:F2}<br>Buy Target: R${stock.BuyPrice:F2}</p>",
+                        isHtml: true
+                    );
                     GlobalLogger.LogInformation("Buy {StockName}.", stock.Name);
                     break;
                 case RecommendationState.Sell:
-                    //send email to user saying to Sell the stock
+                    await client.SendEmailAsync(
+                        subject: $"Sell Alert: {stock.Name}",
+                        body: $"<h1>Sell Alert</h1><p>It is recommended to <strong>SELL</strong> {stock.Name}.</p><p>Current Price: R${stock.CurrentPrice:F2}<br>Sell Target: R${stock.SellPrice:F2}</p>",
+                        isHtml: true
+                    );
                     GlobalLogger.LogInformation("Sell {StockName}.", stock.Name);
                     break;
                 default:
@@ -64,7 +76,7 @@ class Program
             }
 
 
-            await Task.Delay(1000);
+            await Task.Delay(20*1000);
         }
 
         return 0;

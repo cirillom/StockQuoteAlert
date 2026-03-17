@@ -18,6 +18,7 @@ namespace StockQuoteAlert
     internal class Stock
     {
         private string name;
+        // all prices are stored in cents to avoid floating-point precision issues
         private int sellPriceCents;
         private int buyPriceCents;
         private int currentPriceCents;
@@ -47,6 +48,10 @@ namespace StockQuoteAlert
             get { return name; }
             private set { name = value; }
         }
+
+        public decimal SellPrice => sellPriceCents / 100m;
+        public decimal BuyPrice => buyPriceCents / 100m;
+        public decimal CurrentPrice => currentPriceCents / 100m;
 
         public async Task SetNameAsync(string value)
         {
