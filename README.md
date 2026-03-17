@@ -6,7 +6,7 @@ A lightweight .NET console application that monitors B3 stock prices and sends e
 
 ## Features
 
-- **Real-time price monitoring** — polls a stock's current price on a configurable interval (default: 20 seconds)
+- **Real-time price monitoring** — polls a stock's current price on a configurable interval (default: 60 seconds)
 - **Buy & sell alerts** — sends an HTML email when the price drops below your buy target or rises above your sell target
 - **Automatic retries** — both the quote API and the email sender retry up to 5 times with a 2-second backoff before giving up
 - **Graceful shutdown** — pressing Ctrl+C cancels any in-flight request cleanly without spamming error logs
