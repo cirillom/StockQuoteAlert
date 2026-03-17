@@ -1,6 +1,10 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
+﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using System;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text.Json;
+using System.Threading.Tasks;
 
 namespace StockQuoteAlert
 {
@@ -17,47 +21,67 @@ namespace StockQuoteAlert
         private int sellPriceCents;
         private int buyPriceCents;
         private int currentPriceCents;
-        private RecommendationState recommendation;
+        static readonly HttpClient client = new HttpClient();
 
         public Stock(string name, int sellPriceCents, int buyPriceCents)
         {
-            this.Name = name;
+            Program.GlobalLogger.LogDebug("Creating tracker for {StockName}", name);
+            var config = new ConfigurationBuilder().AddUserSecrets<Program>().Build();
+            string? apiKey = config["BrapiKey"];
+            if (string.IsNullOrEmpty(apiKey))
+            {
+                throw new InvalidOperationException("API key is missing from Secret Manager.");
+            }
+            client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            Program.GlobalLogger.LogDebug("Initialized HttpClient with API key and User-Agent header.");
+
+            SetNameAsync(name).Wait();
+            UpdateCurrentPrice().Wait();
             this.sellPriceCents = sellPriceCents;
             this.buyPriceCents = buyPriceCents;
-            this.currentPriceCents = 2257;//UpdateCurrentPrice();
         }
 
         public string Name
         {
             get { return name; }
-            set
-            {
-                // Validate that the name is not null or empty
-                if (string.IsNullOrWhiteSpace(value))
-                {
-                    throw new ArgumentException("Stock name cannot be null or empty.");
-                }
-
-                // TODO: Check if this is stock name exist inside B3
-                name = value;
-            }
+            private set { name = value; }
         }
 
-        public void UpdateCurrentPrice()
+        public async Task SetNameAsync(string value)
         {
-            /*string currentPriceStr;
-            // TODO: Implement logic to fetch the current price from an API or data source
-            currentPriceStr = "22.65"; // Placeholder value for demonstration
+            Program.GlobalLogger.LogDebug("Checking '{StockName}' existence.", value);
 
-            this.currentPriceCents = (int)(decimal.Parse(currentPriceStr) * 100);
-            */
-            this.currentPriceCents += 1; // Placeholder logic to simulate price changes for demonstration
-            Console.WriteLine($"Updated current price for {Name}: R${currentPriceCents / 100.0}");
+            if (string.IsNullOrWhiteSpace(value))
+                throw new ArgumentException("Stock name cannot be null or empty.");
+
+            string url = $"https://brapi.dev/api/quote/{value}";
+            using HttpResponseMessage response = await client.GetAsync(url);
+            if (response.IsSuccessStatusCode)
+                Name = value;
+            else
+                throw new ArgumentException($"Stock name '{value}' is not valid or not found in the API.");
+
+            Program.GlobalLogger.LogDebug("Tracking {StockName}.", Name);
+        }
+
+        public async Task UpdateCurrentPrice()
+        {
+            Program.GlobalLogger.LogDebug("Updating current price for {StockName}.", Name);
+            string url = $"https://brapi.dev/api/quote/{this.Name}";
+            string json = await client.GetStringAsync(url);
+
+            using JsonDocument doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+
+            this.currentPriceCents = (int)(root.GetProperty("results")[0].GetProperty("regularMarketPrice").GetDecimal() * 100);
+
+            Program.GlobalLogger.LogInformation("Updated current price for {StockName}: R${CurrentPrice}.", Name, currentPriceCents / 100.0);
         }
 
         public RecommendationState GetRecommentation()
         {
-            UpdateCurrentPrice();
+            UpdateCurrentPrice().Wait();
 
             if (this.currentPriceCents > this.sellPriceCents)
             {
