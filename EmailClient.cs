@@ -1,7 +1,8 @@
-﻿using Microsoft.Extensions.Configuration;
+﻿using MailKit.Net.Smtp;
+using MailKit.Security;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
-using System.Net;
-using System.Net.Mail;
+using MimeKit;
 
 namespace EmailClientApp;
 
@@ -9,7 +10,8 @@ public class EmailSettings
 {
     public string SmtpHost { get; set; } = string.Empty;
     public int SmtpPort { get; set; } = 587;
-    public bool EnableSsl { get; set; } = true;
+    // SecureSocketOptions: None, Auto, SslOnConnect, StartTls, StartTlsWhenAvailable
+    public string SecureSocket { get; set; } = "StartTls";
     public string SenderEmail { get; set; } = string.Empty;
     public string SenderName { get; set; } = string.Empty;
     public string SenderPassword { get; set; } = string.Empty;
@@ -20,23 +22,78 @@ public class EmailSettings
 public class EmailClient : IDisposable
 {
     private readonly EmailSettings _settings;
-    private readonly SmtpClient _smtpClient;
+    private readonly SecureSocketOptions _socketOptions;
+    private ILogger logger;
 
-    public EmailClient(string configPath = "appsettings.json")
+    public EmailClient(string configPath, ILogger logger)
     {
-        Program.GlobalLogger.LogDebug("Initializing EmailClient with config path: {ConfigPath}", configPath);
+        this.logger = logger;
+        this.logger.LogDebug("Initializing EmailClient with config path: {ConfigPath}", configPath);
         _settings = LoadSettings(configPath);
-        _smtpClient = BuildSmtpClient(_settings);
+        _socketOptions = ParseSocketOptions(_settings.SecureSocket);
     }
 
-    public async Task SendEmailAsync(string subject, string body, bool isHtml = false)
+    /// <returns>True if the email was sent successfully, false otherwise.</returns>
+    public async Task<bool> SendEmailAsync(string subject, string body, bool isHtml = false, CancellationToken ct = default)
     {
-        Program.GlobalLogger.LogDebug("Sending email to {RecipientEmail} with subject: {Subject}", _settings.RecipientEmail, subject);
-        using var message = BuildMessage(subject, body, isHtml,
-                                         _settings.RecipientEmail,
-                                         _settings.RecipientName);
-        await _smtpClient.SendMailAsync(message);
-        Program.GlobalLogger.LogInformation("Email sent successfully to {RecipientEmail}", _settings.RecipientEmail);
+        this.logger.LogDebug("Sending email to {RecipientEmail} with subject: {Subject}",
+            _settings.RecipientEmail, subject);
+
+        MimeMessage message = BuildMessage(subject, body, isHtml);
+
+        int maxRetries = 5;
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
+        {
+            try
+            {
+                // MailKit's SmtpClient is not thread-safe — create a new one per send
+                using var smtp = new SmtpClient();
+                await smtp.ConnectAsync(_settings.SmtpHost, _settings.SmtpPort, _socketOptions);
+                await smtp.AuthenticateAsync(_settings.SenderEmail, _settings.SenderPassword);
+                await smtp.SendAsync(message, ct);
+                await smtp.DisconnectAsync(quit: true);
+
+                this.logger.LogInformation("Email sent successfully to {RecipientEmail}",
+                    _settings.RecipientEmail);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                this.logger.LogWarning(ex, "Attempt {Attempt} of {MaxRetries} to send email failed.",
+                    attempt, maxRetries);
+
+                if (attempt == maxRetries || ct.IsCancellationRequested)
+                {
+                    this.logger.LogError(ex,
+                        "Failed to send email to {RecipientEmail} after {MaxRetries} attempts.",
+                        _settings.RecipientEmail, maxRetries);
+                    return false;
+                }
+
+                await Task.Delay(2000);
+            }
+        }
+
+        return false;
+    }
+
+    private MimeMessage BuildMessage(string subject, string body, bool isHtml)
+    {
+        try
+        {
+            var message = new MimeMessage();
+            message.From.Add(new MailboxAddress(_settings.SenderName, _settings.SenderEmail));
+            message.To.Add(new MailboxAddress(_settings.RecipientName, _settings.RecipientEmail));
+            message.Subject = subject;
+            message.Body = new TextPart(isHtml ? "html" : "plain") { Text = body };
+            return message;
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogError(ex, "Failed to build mail message for {ToEmail}.",
+                _settings.RecipientEmail);
+            throw;
+        }
     }
 
     private static EmailSettings LoadSettings(string configPath)
@@ -55,30 +112,17 @@ public class EmailClient : IDisposable
                       "Section 'EmailSettings' missing or empty in config file.");
     }
 
-    private static SmtpClient BuildSmtpClient(EmailSettings s)
-    {
-        return new SmtpClient(s.SmtpHost, s.SmtpPort)
+    private static SecureSocketOptions ParseSocketOptions(string value) =>
+        value.ToLowerInvariant() switch
         {
-            Credentials = new NetworkCredential(s.SenderEmail, s.SenderPassword),
-            EnableSsl = s.EnableSsl,
-            DeliveryMethod = SmtpDeliveryMethod.Network
+            "none" => SecureSocketOptions.None,
+            "auto" => SecureSocketOptions.Auto,
+            "sslonconnect" => SecureSocketOptions.SslOnConnect,
+            "starttls" => SecureSocketOptions.StartTls,
+            "starttlswhenavailable" => SecureSocketOptions.StartTlsWhenAvailable,
+            _ => throw new InvalidOperationException(
+                $"Unknown SecureSocket value '{value}'. Valid values: None, Auto, SslOnConnect, StartTls, StartTlsWhenAvailable.")
         };
-    }
 
-    private MailMessage BuildMessage(string subject, string body,
-                                     bool isHtml,
-                                     string toEmail, string toName)
-    {
-        var from = new MailAddress(_settings.SenderEmail, _settings.SenderName);
-        var to = new MailAddress(toEmail, toName);
-
-        return new MailMessage(from, to)
-        {
-            Subject = subject,
-            Body = body,
-            IsBodyHtml = isHtml
-        };
-    }
-
-    public void Dispose() => _smtpClient.Dispose();
+    public void Dispose() { } // nothing to dispose — SmtpClient is created per-send
 }
